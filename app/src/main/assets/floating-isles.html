@@ -11,15 +11,16 @@
   *{margin:0;padding:0;box-sizing:border-box}
   html,body{height:100%;background:var(--ink);overflow:hidden}
   canvas{display:block;width:100vw;height:100vh}
-  .hud{position:fixed;left:20px;font-family:ui-monospace,'Cascadia Code',Menlo,monospace;
+  .hud{position:fixed;left:calc(20px + var(--ix,0px));font-family:ui-monospace,'Cascadia Code',Menlo,monospace;
        pointer-events:none;user-select:none}
-  .hud.top{top:18px;letter-spacing:.35em;font-size:11px;color:var(--teal);opacity:.85}
+  .hud.top{top:calc(18px + var(--iy,0px));letter-spacing:.35em;font-size:11px;color:var(--teal);opacity:.85}
   .hud.top b{color:var(--emerald);font-weight:600}
-  .hud.bottom{bottom:18px;font-size:12px;line-height:1.7}
+  .hud.bottom{bottom:calc(18px + var(--iy,0px));font-size:12px;line-height:1.7}
   #wordEn{color:var(--teal);letter-spacing:.4em}
   #wordJa{color:var(--emerald);font-size:20px;letter-spacing:.2em}
   #wordRo{color:var(--royal);opacity:.9;font-style:italic}
-  .controls{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;
+  .controls{position:fixed;right:calc(16px + var(--ix,0px));bottom:calc(16px + var(--iy,0px));
+            display:flex;flex-direction:column;
             gap:10px;align-items:flex-end;z-index:5;
             font-family:ui-monospace,'Cascadia Code',Menlo,monospace}
   #seedLbl,#resLbl{font-size:10px;color:var(--royal);letter-spacing:.3em;opacity:.75;user-select:none}
@@ -43,6 +44,7 @@
   <div id="resLbl">····×····</div>
   <div id="seedLbl">WORLD ·······</div>
   <button class="btn" id="genBtn">⟳ NEW WORLD</button>
+  <button class="btn" id="fitBtn">⛶ FIT 0%</button>
   <button class="btn" id="pauseBtn">❚❚ PAUSE</button>
 </div>
 
@@ -67,10 +69,28 @@ function detectDisplay(){
   if(lbl) lbl.textContent = `${physW}×${physH} @${devicePixelRatio}x`;
 }
 
-const ROYAL   = [61, 90, 254];
-const TEAL    = [20, 196, 178];
-const EMERALD = [39, 217, 138];
-const CLOUDC  = [150, 180, 255];
+/* ─── world palettes: 5 tones each, rolled per-world by seed ─── */
+const PALETTES = [
+  {name:'LAGOON',  c1:[61,90,254],   c2:[20,196,178],  c3:[39,217,138],  acc:[191,232,255], cloud:[150,180,255]},
+  {name:'EMBER',   c1:[179,38,94],   c2:[255,107,53],  c3:[255,197,61],  acc:[255,233,199], cloud:[255,158,128]},
+  {name:'SAKURA',  c1:[124,77,255],  c2:[240,98,146],  c3:[255,193,227], acc:[255,245,157], cloud:[248,187,208]},
+  {name:'JADE',    c1:[0,121,107],   c2:[38,166,154],  c3:[178,255,89],  acc:[255,255,141], cloud:[167,255,235]},
+  {name:'GLACIER', c1:[41,98,255],   c2:[128,216,255], c3:[225,245,254], acc:[179,136,255], cloud:[207,233,255]},
+  {name:'VERDANT', c1:[46,125,50],   c2:[102,187,106], c3:[212,225,87],  acc:[255,138,101], cloud:[197,225,165]},
+  {name:'NEBULA',  c1:[142,36,170],  c2:[236,64,122],  c3:[255,183,77],  acc:[128,222,234], cloud:[206,147,216]},
+  {name:'MOONLIT', c1:[69,90,100],   c2:[144,164,174], c3:[236,239,241], acc:[77,208,225],  cloud:[176,190,197]},
+];
+let PAL = PALETTES[0];
+let ROYAL=PAL.c1, TEAL=PAL.c2, EMERALD=PAL.c3, ACCENT=PAL.acc, CLOUDC=PAL.cloud;
+
+function applyPalette(p){
+  PAL=p; ROYAL=p.c1; TEAL=p.c2; EMERALD=p.c3; ACCENT=p.acc; CLOUDC=p.cloud;
+  const hex = c=>'#'+c.map(v=>(v|0).toString(16).padStart(2,'0')).join('');
+  const r = document.documentElement.style;
+  r.setProperty('--royal', hex(p.c1));
+  r.setProperty('--teal',  hex(p.c2));
+  r.setProperty('--emerald', hex(p.c3));
+}
 
 /* ─── seeded RNG: every world is reproducible from its seed ──── */
 let rngState = 1;
@@ -305,15 +325,30 @@ function makeCloud(wCells){
 
 /* ─── world state ────────────────────────────────────────────── */
 let W,H,cols,rows;
+let insX=0, insY=0, insetIdx=0;
+const INSETS=[0,.025,.05];   // overscan compensation steps
+
+function applyInset(){
+  const ins=INSETS[insetIdx];
+  insX=(innerWidth*ins)|0; insY=(innerHeight*ins)|0;
+  const r=document.documentElement.style;
+  r.setProperty('--ix',insX+'px'); r.setProperty('--iy',insY+'px');
+  const btn=document.getElementById('fitBtn');
+  if(btn) btn.textContent='⛶ FIT '+(ins? (ins*100).toFixed(1).replace('.0','') : '0')+'%';
+  try{ localStorage.setItem('fi_inset', insetIdx); }catch(e){}
+}
+
 let islands=[], clouds=[], stars=[], drops=[], mist=[], bubbles=[], flock=null;
 
 function build(){
   detectDisplay();
+  applyInset();
+  applyPalette(PALETTES[(R()*PALETTES.length)|0]);   // seeded: same world, same colors
   W = cvs.width  = innerWidth*devicePixelRatio;
   H = cvs.height = innerHeight*devicePixelRatio;
   cvs.style.width=innerWidth+'px'; cvs.style.height=innerHeight+'px';
-  cols = Math.floor(innerWidth/CW);
-  rows = Math.floor(innerHeight/CH);
+  cols = Math.floor((innerWidth-2*insX)/CW);
+  rows = Math.floor((innerHeight-2*insY)/CH);
 
   stars = Array.from({length:(cols*rows*0.005)|0},()=>({
     x:Math.random()*cols, y:Math.random()*rows*.5,
@@ -443,7 +478,7 @@ function roleStyle(role, shade, depth){
     case 'canopy': return rgba(tri(.55+.45*Math.min(1,Math.max(0,shade))), (.40+.5*shade)*vis);
     case 'trunk':  return rgba(mix(ROYAL,TEAL,.35), .65*vis);
     case 'grass':  return rgba(tri(.5+.4*shade), (.5+.4*shade)*vis);
-    case 'flower': return rgba(shade<.3? mix(ROYAL,[200,210,255],.3) : tri(.8+.2*shade), .9*vis);
+    case 'flower': return rgba(shade<.35? ACCENT : tri(.8+.2*shade), .9*vis);
     case 'edge':   return rgba(tri(.25+depth*.45), (.35+shade*.6)*vis);
     case 'rock':   return rgba(mix(ROYAL, tri(depth), .3+shade*.5), (.25+shade*.55)*vis);
     case 'root':   return rgba(mix(TEAL,EMERALD,.4), Math.max(.08,shade)*vis);
@@ -454,12 +489,13 @@ function roleStyle(role, shade, depth){
 }
 
 function draw(){
-  const g = ctx.createLinearGradient(0,0,0,innerHeight);
-  g.addColorStop(0,  '#04081E');
-  g.addColorStop(.40,'#0A1538');
-  g.addColorStop(.75,'#073039');
-  g.addColorStop(1,  '#06351F');
-  ctx.fillStyle=g; ctx.fillRect(0,0,innerWidth,innerHeight);
+  const dk=(c,t)=>mix(c,[3,4,10],t);
+  const g = ctx.createLinearGradient(0,-insY,0,innerHeight-insY);
+  g.addColorStop(0,  rgba(dk(PAL.c1,.90),1));
+  g.addColorStop(.40,rgba(dk(PAL.c1,.78),1));
+  g.addColorStop(.75,rgba(dk(PAL.c2,.82),1));
+  g.addColorStop(1,  rgba(dk(PAL.c3,.85),1));
+  ctx.fillStyle=g; ctx.fillRect(-insX,-insY,innerWidth,innerHeight);
 
   ctx.font=FONT; ctx.textBaseline='top';
 
@@ -541,16 +577,18 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let paused=false, last=performance.now(), seed=0;
 
 const genBtn   = document.getElementById('genBtn');
+const fitBtn   = document.getElementById('fitBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 const seedLbl  = document.getElementById('seedLbl');
 
 function generate(keepSeed){
   if(!keepSeed) seed = ((Date.now() ^ (performance.now()*7919)) >>> 0) || 1;
   srand(seed);
-  seedLbl.textContent = 'WORLD ' + seed.toString(36).toUpperCase().padStart(7,'0');
   build();
+  seedLbl.textContent = 'WORLD ' + seed.toString(36).toUpperCase().padStart(7,'0') + ' · ' + PAL.name;
   if(reduced){
     ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    ctx.translate(insX,insY);
     step(1/30,false); draw();
   }
 }
@@ -561,23 +599,32 @@ function togglePause(){
   pauseBtn.textContent = paused ? '▶ RESUME' : '❚❚ PAUSE';
 }
 
+function cycleFit(){
+  insetIdx = (insetIdx+1) % INSETS.length;
+  generate(true);                       // same seed: same world, re-laid-out
+}
+
 function frame(now){
   const dt=Math.min(.05,(now-last)/1000); last=now;
   if(!paused) step(dt,false);
   ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  ctx.translate(insX,insY);
   draw();
   if(!reduced) requestAnimationFrame(frame);
 }
 
 genBtn.addEventListener('click', ()=>generate(false));
+fitBtn.addEventListener('click', cycleFit);
 pauseBtn.addEventListener('click', togglePause);
 cvs.addEventListener('click', togglePause);            // tap anywhere still pauses
 addEventListener('keydown', e=>{
   if(e.code==='Space'){ e.preventDefault(); togglePause(); }
   if(e.key==='g' || e.key==='G' || e.key==='Enter') generate(false);
+  if(e.key==='f' || e.key==='F') cycleFit();
 });
 addEventListener('resize',()=>{ ctx.setTransform(1,0,0,1,0,0); generate(true); });
 
+try{ insetIdx = (+localStorage.getItem('fi_inset') || 0) % INSETS.length; }catch(e){}
 generate(false);
 if(!reduced) requestAnimationFrame(frame);
 
