@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>浮島 — Floating Isles</title>
+<style>
+  :root{
+    --royal:#3D5AFE; --teal:#14C4B2; --emerald:#27D98A; --ink:#04081E;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:var(--ink);overflow:hidden}
+  canvas{display:block;width:100vw;height:100vh}
+  .hud{position:fixed;left:20px;font-family:ui-monospace,'Cascadia Code',Menlo,monospace;
+       pointer-events:none;user-select:none}
+  .hud.top{top:18px;letter-spacing:.35em;font-size:11px;color:var(--teal);opacity:.85}
+  .hud.top b{color:var(--emerald);font-weight:600}
+  .hud.bottom{bottom:18px;font-size:12px;line-height:1.7}
+  #wordEn{color:var(--teal);letter-spacing:.4em}
+  #wordJa{color:var(--emerald);font-size:20px;letter-spacing:.2em}
+  #wordRo{color:var(--royal);opacity:.9;font-style:italic}
+  .controls{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;
+            gap:10px;align-items:flex-end;z-index:5;
+            font-family:ui-monospace,'Cascadia Code',Menlo,monospace}
+  #seedLbl,#resLbl{font-size:10px;color:var(--royal);letter-spacing:.3em;opacity:.75;user-select:none}
+  #resLbl{opacity:.5}
+  .btn{background:rgba(4,12,30,.55);border:1px solid rgba(20,196,178,.45);color:var(--teal);
+       font-family:inherit;font-size:12px;letter-spacing:.25em;padding:13px 20px;
+       cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+       backdrop-filter:blur(3px);min-width:170px;text-align:center}
+  .btn:hover{border-color:var(--emerald);color:var(--emerald)}
+  .btn:active{transform:scale(.96)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud top">浮 島 &nbsp;<b>─────</b>&nbsp; FLOATING ISLES</div>
+<div class="hud bottom">
+  <div id="wordEn">WATER</div>
+  <div><span id="wordJa">水</span>&nbsp;&nbsp;<span id="wordRo">mizu</span></div>
+</div>
+<div class="controls">
+  <div id="resLbl">····×····</div>
+  <div id="seedLbl">WORLD ·······</div>
+  <button class="btn" id="genBtn">⟳ NEW WORLD</button>
+  <button class="btn" id="pauseBtn">❚❚ PAUSE</button>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ─── grid + palette ─────────────────────────────────────────── */
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+/* ─── display detection: glyph grid scales to the screen ─────── */
+let CW=10, CH=18, GLYPH=15, FONT='';
+const FSTACK = 'ui-monospace, "Cascadia Code", Menlo, "Noto Sans JP", monospace';
+const fontAt = s => `${Math.round(GLYPH*s)}px ${FSTACK}`;
+function detectDisplay(){
+  const physW = (innerWidth*devicePixelRatio)|0, physH = (innerHeight*devicePixelRatio)|0;
+  // scale glyphs to viewport height: ~phone 1x, 1080p TV ~1.4x, capped for huge displays
+  const k = Math.min(2.4, Math.max(.8, innerHeight/780));
+  GLYPH = Math.round(15*k); CW = 10*k; CH = 18*k;
+  FONT = fontAt(1);
+  const lbl = document.getElementById('resLbl');
+  if(lbl) lbl.textContent = `${physW}×${physH} @${devicePixelRatio}x`;
+}
+
+const ROYAL   = [61, 90, 254];
+const TEAL    = [20, 196, 178];
+const EMERALD = [39, 217, 138];
+const CLOUDC  = [150, 180, 255];
+
+/* ─── seeded RNG: every world is reproducible from its seed ──── */
+let rngState = 1;
+function srand(s){ rngState = s>>>0 || 1; }
+function R(){
+  rngState = (rngState + 0x6D2B79F5)>>>0;
+  let x = rngState;
+  x = Math.imul(x ^ (x>>>15), x|1);
+  x ^= x + Math.imul(x ^ (x>>>7), x|61);
+  return ((x ^ (x>>>14))>>>0) / 4294967296;
+}
+
+const lerp = (a,b,t)=>a+(b-a)*t;
+const mix  = (c1,c2,t)=>[lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];
+const tri  = t => t<.5 ? mix(ROYAL,TEAL,t*2) : mix(TEAL,EMERALD,(t-.5)*2);
+const rgba = (c,a)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+const rand = (a,b)=>a+R()*(b-a);
+const pick = arr=>arr[(R()*arr.length)|0];
+
+/* ─── translation routine ────────────────────────────────────── */
+const LEXICON = [
+  {en:'WATER',ja:'水',ro:'mizu'},   {en:'FALL',ja:'滝',ro:'taki'},
+  {en:'ISLAND',ja:'島',ro:'shima'}, {en:'SKY',ja:'空',ro:'sora'},
+  {en:'TREE',ja:'木',ro:'ki'},      {en:'FLOW',ja:'流',ro:'nagare'},
+  {en:'MIST',ja:'霧',ro:'kiri'},    {en:'WIND',ja:'風',ro:'kaze'},
+  {en:'CLOUD',ja:'雲',ro:'kumo'},   {en:'BIRD',ja:'鳥',ro:'tori'},
+  {en:'STONE',ja:'岩',ro:'iwa'},    {en:'FLOWER',ja:'花',ro:'hana'},
+];
+let lex = 0;
+const word = () => LEXICON[lex];
+const TRANSITION = ['·','∴','◦','∗'];
+function cycleWord(){
+  lex = (lex+1)%LEXICON.length;
+  wordEn.textContent = word().en;
+  wordJa.textContent = word().ja;
+  wordRo.textContent = word().ro;
+}
+
+/* ─── glyph sets ─────────────────────────────────────────────── */
+const SURF   = ['─','─','═','﹏','⌒','─'];
+const GRASS  = ["'",'"','ʷ','ˆ',"'",'ʬ'];
+const FLOWER = ['✿','❀','*'];
+const ROCKI  = ['▒','░','·','░',' ',' '];      // upper body, denser
+const ROCKO  = ['·','░',' ',' ',' ',' ',' '];  // lower body, sparser
+const FOLIAGE= ['@','&','%','#','*','o','@','&'];
+const ROOTCH = ['│','╎',')','(','╷'];
+const VINE   = [')','(','{','}','~'];
+
+/* ─── tree generator ─────────────────────────────────────────── */
+function makeTree(scale, dead){
+  const g = [];
+  const trunkH = (dead?3:2) + (R()*2|0);
+  if(dead){
+    // bare snag: tall trunk, a few weathered branches, no canopy
+    for(let h=1; h<=trunkH; h++)
+      g.push({dx: R()<.2? pick([-1,1]) : 0, dy:-h, ch: h===trunkH?'Y':'║', role:'trunk', shade:.5});
+    g.push({dx:1,  dy:-trunkH,   ch:'╲', role:'trunk', shade:.4});
+    g.push({dx:-1, dy:-trunkH+1, ch:'╱', role:'trunk', shade:.4});
+    g.push({dx:2,  dy:-trunkH-1, ch:'·', role:'trunk', shade:.3});
+    return {glyphs:g, w:3};
+  }
+  const cw = Math.max(7, (scale*rand(.5,.62))|0);     // canopy width
+  const cr = Math.max(3, Math.round(cw/2.8));         // canopy rows
+  // canopy: ellipse with ragged edge, sits above trunk
+  for(let r=0;r<cr;r++){
+    const yy  = r - (cr-1)/2;
+    let half  = (cw/2)*Math.sqrt(Math.max(0,1-(yy/(cr/2+.4))**2));
+    half += rand(-1,1);
+    const dy = -(trunkH + cr - r);
+    for(let x=-half|0; x<=half; x++){
+      if(R()<.82){
+        const edge = Math.abs(x)/Math.max(1,half);
+        g.push({dx:x, dy, ch:pick(FOLIAGE), role:'canopy',
+                shade: (1-r/cr)*.6 + (1-edge)*.4 + rand(-.1,.1)});
+      }
+    }
+  }
+  // trunk + base flare
+  for(let h=1; h<=trunkH; h++)
+    g.push({dx: h===trunkH? pick([0,0,1,-1]) : 0, dy:-h, ch: h===trunkH?'Y':'║', role:'trunk', shade:.5});
+  g.push({dx:-1, dy:0, ch:'╱', role:'trunk', shade:.4});
+  g.push({dx: 1, dy:0, ch:'╲', role:'trunk', shade:.4});
+  return {glyphs:g, w:cw};
+}
+
+/* ─── biomes: each island rolls one ──────────────────────────── */
+const BIOMES = [
+  {name:'MEADOW', grass:.36, flower:.18, boulder:.02, tree:.95, extra:.15, treeS:1.0, vine:.10, crystal:.02, dead:false},
+  {name:'FOREST', grass:.24, flower:.05, boulder:.02, tree:1.0, extra:.90, treeS:.78, vine:.25, crystal:.03, dead:false},
+  {name:'CRAG',   grass:.10, flower:.02, boulder:.16, tree:.55, extra:0,   treeS:.60, vine:.08, crystal:.10, dead:true},
+  {name:'MOSSY',  grass:.32, flower:.08, boulder:.04, tree:.90, extra:.35, treeS:.85, vine:.55, crystal:.05, dead:false},
+];
+
+/* ─── island generator ───────────────────────────────────────── */
+function makeIsland(wCells, depth, withTree){
+  const g = [];
+  const w = wCells|0;
+  const biome = pick(BIOMES);
+
+  // terrain heightmap — gentle hills and plateaus (0–2 cells high)
+  const hMap = new Array(w).fill(0);
+  let cur = 0;
+  for(let x=2; x<w-2; x++){
+    if(R()<.28) cur += pick([-1,1]);
+    cur = Math.min(2, Math.max(0, cur));
+    hMap[x] = cur;
+  }
+  hMap[1] = Math.min(hMap[1], hMap[2]);
+
+  // surface follows the terrain, with slopes at every height change
+  for(let x=0; x<w; x++){
+    const dy = -hMap[x];
+    let ch;
+    if(x===0) ch='╭'; else if(x===w-1) ch='╮';
+    else if(hMap[x]>hMap[x-1]) ch='╱';
+    else if(hMap[x]<hMap[x-1]) ch='╲';
+    else ch = pick(SURF);
+    g.push({dx:x, dy, ch, role:'edge', shade:.95});
+    for(let f=dy+1; f<=0; f++)   // fill hills beneath so they read solid
+      g.push({dx:x, dy:f, ch:pick(['▒','░']), role:'rock', shade:.8});
+  }
+
+  // surface decorations, odds set by biome
+  for(let x=1; x<w-1; x++){
+    const dy = -hMap[x]-1;
+    const r = R();
+    if(r < biome.grass)
+      g.push({dx:x, dy, ch:pick(GRASS), role:'grass', shade:rand(.6,1)});
+    else if(r < biome.grass+biome.flower)
+      g.push({dx:x, dy, ch:pick(FLOWER), role:'flower', shade:R()});
+    else if(r < biome.grass+biome.flower+biome.boulder)
+      g.push({dx:x, dy, ch:pick(['▲','∆']), role:'boulder', shade:rand(.4,.8)});
+  }
+
+  // waterfall sources: surface ponds the falls pour from
+  const falls = [];
+  const nFalls = w>26?2:1;
+  for(let i=0;i<nFalls;i++){
+    const col = (i===0? w*rand(.14,.32) : w*rand(.68,.86))|0;
+    const dy = -hMap[col];
+    for(let p=-1;p<=1;p++)
+      g.push({dx:col+p, dy, ch:'≈', role:'water', shade:rand(.6,1)});
+    falls.push({col, dy});
+  }
+
+  // earthen underside — deep, chunky, textured, with crystal seams
+  let le=0, re=w-1, dy=1;
+  const edgeRows = [];
+  const bodyRows = 4 + Math.round(w/4.5);
+  for(let r=0; r<bodyRows && re-le>2; r++, dy++){
+    const ease = r<2 ? 1 : (1+R()*2)|0;
+    le += R()<.8 ? ease : 0;
+    re -= R()<.8 ? ease : 0;
+    if(re-le<1) break;
+    const shade = .85 - (r/bodyRows)*.6;
+    g.push({dx:le, dy, ch:'╲', role:'edge', shade});
+    g.push({dx:re, dy, ch:'╱', role:'edge', shade});
+    edgeRows.push({le, re, dy});
+    const set = r < bodyRows*.45 ? ROCKI : ROCKO;
+    for(let x=le+1;x<re;x++){
+      if(r>1 && R() < biome.crystal){
+        g.push({dx:x, dy, ch:pick(['◆','◇','✧']), role:'crystal',
+                shade:.8, tw:rand(0,Math.PI*2)});
+      }else{
+        const ch = pick(set);
+        if(ch!==' ') g.push({dx:x, dy, ch, role:'rock', shade:shade*rand(.6,1)});
+      }
+    }
+  }
+
+  // vines spilling over the upper edges
+  for(const er of edgeRows.slice(0,3)){
+    for(const side of [{x:er.le, d:-1},{x:er.re, d:1}]){
+      if(R() > biome.vine) continue;
+      let vx = side.x + side.d;
+      const len = rand(3,9)|0;
+      for(let v=0; v<len; v++){
+        if(R()<.3) vx += side.d;
+        const bloom = v===len-1 && R()<.35;
+        g.push({dx:vx, dy:er.dy+v, ch: bloom? pick(FLOWER) : pick(VINE),
+                role: bloom? 'flower' : 'vine', shade:.6 - v*.05});
+      }
+    }
+  }
+
+  // hanging roots — multiple wandering strands
+  const span = re-le;
+  const strands = 2 + Math.round(w/10);
+  for(let s=0;s<strands;s++){
+    let x = le + 1 + (R()*Math.max(1,span-1))|0;
+    const len = (rand(3,8) + (s===0? w/8 : 0))|0;
+    for(let t2=0;t2<len;t2++){
+      if(R()<.35) x += pick([-1,1]);
+      g.push({dx:x, dy:dy+t2, ch: t2===len-1?'·':pick(ROOTCH),
+              role:'root', shade:.35 - t2*.03});
+      if(R()<.12)
+        g.push({dx:x+pick([-1,1]), dy:dy+t2, ch:'~', role:'root', shade:.2});
+    }
+  }
+
+  // trees sit on the terrain; count, size, and kind set by biome
+  const trees = [];
+  if(withTree && R() < biome.tree){
+    const tx = (w*rand(.38,.62))|0;
+    trees.push({tree:makeTree(w*biome.treeS, biome.dead), tx, ty:-hMap[tx]});
+    if(w>24 && R() < biome.extra){
+      const tx2 = tx > w/2 ? (w*rand(.14,.24))|0 : (w*rand(.76,.86))|0;
+      trees.push({tree:makeTree(w*biome.treeS*.55, biome.dead && R()<.5), tx:tx2, ty:-hMap[tx2]});
+    }
+  }
+  return {glyphs:g, trees, falls, w, depth, biome:biome.name,
+          treeTop: trees.length? 13 : 4};
+}
+
+/* ─── cloud generator ────────────────────────────────────────── */
+function makeCloud(wCells){
+  const g=[]; const rowsN = 2 + (Math.random()*2|0);
+  for(let r=0;r<rowsN;r++){
+    const yy = r-(rowsN-1)/2;
+    let half = (wCells/2)*Math.sqrt(Math.max(0,1-(yy/(rowsN/1.6))**2)) + rand(-1,1);
+    for(let x=-half|0;x<=half;x++){
+      const edge = Math.abs(x)/Math.max(1,half);
+      if(Math.random()<.85)
+        g.push({dx:x, dy:r, ch: edge>.75?'░':'▒', shade:1-edge*.5});
+    }
+  }
+  // wispy underline
+  for(let x=-wCells/3|0;x<wCells/3;x++)
+    if(Math.random()<.4) g.push({dx:x, dy:rowsN, ch:'~', shade:.3});
+  return g;
+}
+
+/* ─── world state ────────────────────────────────────────────── */
+let W,H,cols,rows;
+let islands=[], clouds=[], stars=[], drops=[], mist=[], bubbles=[], flock=null;
+
+function build(){
+  detectDisplay();
+  W = cvs.width  = innerWidth*devicePixelRatio;
+  H = cvs.height = innerHeight*devicePixelRatio;
+  cvs.style.width=innerWidth+'px'; cvs.style.height=innerHeight+'px';
+  cols = Math.floor(innerWidth/CW);
+  rows = Math.floor(innerHeight/CH);
+
+  stars = Array.from({length:(cols*rows*0.005)|0},()=>({
+    x:Math.random()*cols, y:Math.random()*rows*.5,
+    tw:rand(0,Math.PI*2), spd:rand(.3,1.2)}));
+
+  clouds=[];
+  const nClouds = Math.max(4, (cols/22)|0);
+  for(let i=0;i<nClouds;i++){
+    const depth = Math.random();
+    clouds.push({g:makeCloud(rand(10,26)*(0.6+depth*.6)), x:Math.random()*cols,
+                 y:rand(2, rows*.85), spd:(.25+depth*.85)*pick([1,1,-1]), depth});
+  }
+
+  islands=[];
+  // procedural world: the generator rolls all the dials internally
+  const n = cols<70 ? 2 : 3 + (R()*2|0);                 // 2 on phones, 3–4 on big screens
+  const bands = Array.from({length:n},(_,i)=>i);          // shuffled horizontal slots
+  for(let i=bands.length-1;i>0;i--){ const j=(R()*(i+1))|0; [bands[i],bands[j]]=[bands[j],bands[i]]; }
+  const defs=[];
+  for(let i=0;i<n;i++){
+    const depth = Math.min(1, Math.max(.22,
+      (n===1 ? 1 : .28 + .72*(i/(n-1))) + rand(-.07,.07)));
+    defs.push({
+      depth,
+      w:  lerp(12, 30, depth) * rand(.85,1.12),
+      fx: (bands[i] + rand(.18,.82)) / n,
+      fy: rand(.15,.55),
+      tree: R() < .85
+    });
+  }
+  for(const d of defs){
+    const isl = makeIsland(Math.min(d.w|0, cols-8), d.depth, d.tree);
+    const sc = .48 + d.depth*.38;               // depth sets render scale: far = small
+    const wCells = isl.w*sc;
+    const x = Math.min(Math.max(2,(d.fx*cols - wCells/2)|0), Math.max(2,(cols-wCells-2)|0));
+    const y = Math.max((isl.treeTop*sc)|0 + 1, (d.fy*rows)|0);
+    const falls = isl.falls.map(f => ({col:f.col, dy:f.dy,
+      len:(rand(10,16)+isl.depth*9)*(.55+.5*sc), timer:rand(0,.2)}));
+    islands.push({isl,x,y,falls,s:sc,
+      bobAmp:rand(.4,.9)*(1+d.depth), bobSpd:rand(.22,.45)/(1+d.depth),
+      phase:rand(0,Math.PI*2)});
+  }
+
+  flock = newFlock();
+  drops=[]; mist=[]; bubbles=[];
+  for(let i=0;i<240;i++) step(1/60,true);
+}
+
+function newFlock(){
+  const dir = pick([1,-1]);
+  const n = 4+(Math.random()*4|0);
+  const members=[];
+  for(let i=0;i<n;i++) members.push({ox:-i*1.6*dir + rand(-.5,.5), oy:Math.abs(i-n/3)*.7 + rand(-.4,.4)});
+  return {x: dir>0? -8: cols+8, y:rand(3,rows*.3), dir, spd:rand(3,4.5), members, flap:0, wait:rand(0,10)};
+}
+
+/* ─── simulation ─────────────────────────────────────────────── */
+let t=0, wordTimer=0, letterIdx=0;
+
+function spawnDrop(ix, fall, bobY){
+  const home = islands[ix];
+  const w = word();
+  const sy = home.y + bobY + (fall.dy+1)*home.s;
+  drops.push({x:home.x+fall.col*home.s+rand(-.15,.15), y:sy, ix, fall,
+    v:rand(7,10)*(0.7+home.isl.depth*.5), born:sy,
+    ch:w.en[letterIdx++ % w.en.length], ja:w.ja, sway:rand(0,Math.PI*2)});
+}
+
+function step(dt, pre){
+  t+=dt; wordTimer+=dt;
+  if(wordTimer>7){ wordTimer=0; if(!pre) cycleWord(); }
+
+  for(let i=0;i<islands.length;i++){
+    const h=islands[i];
+    const bobY=Math.sin(t*h.bobSpd+h.phase)*h.bobAmp;
+    for(const f of h.falls){
+      f.timer-=dt;
+      if(f.timer<=0){ f.timer=rand(.10,.22)/(0.6+h.isl.depth*.6); spawnDrop(i,f,bobY); }
+    }
+  }
+
+  for(let i=drops.length-1;i>=0;i--){
+    const d=drops[i];
+    d.y+=d.v*dt; d.x+=Math.sin(t*2+d.sway)*dt*.35;
+    if((d.y-d.born)/d.fall.len >= 1){
+      for(let m=0;m<2;m++)
+        mist.push({x:d.x+rand(-1.5,1.5), y:d.y, vy:rand(-1.4,-.5), vx:rand(-.6,.6),
+                   life:rand(.9,2), age:0, ch:pick(['·','˚','∘','¨'])});
+      drops.splice(i,1);
+    }
+  }
+  for(let i=mist.length-1;i>=0;i--){
+    const m=mist[i]; m.age+=dt; m.x+=m.vx*dt; m.y+=m.vy*dt; m.vy*=(1-dt*.5);
+    if(m.age>m.life) mist.splice(i,1);
+  }
+
+  for(const c of clouds){
+    c.x += c.spd*dt;
+    if(c.x > cols+18) c.x = -18;
+    if(c.x < -18) c.x = cols+18;
+  }
+
+  if(Math.random() < dt*1.2)
+    bubbles.push({x:rand(cols*.55,cols*.98), y:rows+1, vy:-rand(1.2,2.4),
+                  sway:rand(0,Math.PI*2), life:rand(6,11), age:0,
+                  ch:pick(['°','◦','○','○','〇'])});
+  for(let i=bubbles.length-1;i>=0;i--){
+    const b=bubbles[i]; b.age+=dt; b.y+=b.vy*dt;
+    b.x+=Math.sin(t*1.4+b.sway)*dt*.8;
+    if(b.age>b.life || b.y<-1) bubbles.splice(i,1);
+  }
+
+  if(flock){
+    if(flock.wait>0){ flock.wait-=dt; }
+    else{
+      flock.x += flock.dir*flock.spd*dt;
+      flock.flap += dt*6;
+      if((flock.dir>0 && flock.x>cols+12)||(flock.dir<0 && flock.x<-12)) flock=newFlock();
+    }
+  }
+}
+
+/* ─── render ─────────────────────────────────────────────────── */
+function roleStyle(role, shade, depth){
+  const vis = .45 + depth*.55;
+  switch(role){
+    case 'canopy': return rgba(tri(.55+.45*Math.min(1,Math.max(0,shade))), (.40+.5*shade)*vis);
+    case 'trunk':  return rgba(mix(ROYAL,TEAL,.35), .65*vis);
+    case 'grass':  return rgba(tri(.5+.4*shade), (.5+.4*shade)*vis);
+    case 'flower': return rgba(shade<.3? mix(ROYAL,[200,210,255],.3) : tri(.8+.2*shade), .9*vis);
+    case 'edge':   return rgba(tri(.25+depth*.45), (.35+shade*.6)*vis);
+    case 'rock':   return rgba(mix(ROYAL, tri(depth), .3+shade*.5), (.25+shade*.55)*vis);
+    case 'root':   return rgba(mix(TEAL,EMERALD,.4), Math.max(.08,shade)*vis);
+    case 'vine':   return rgba(mix(TEAL,EMERALD,.65), Math.max(.12,.3+shade*.5)*vis);
+    case 'water':  return rgba(mix(TEAL,[210,240,255],.35), (.5+.4*shade)*vis);
+    case 'boulder':return rgba(mix(ROYAL,TEAL,.3+shade*.3), (.35+shade*.5)*vis);
+  }
+}
+
+function draw(){
+  const g = ctx.createLinearGradient(0,0,0,innerHeight);
+  g.addColorStop(0,  '#04081E');
+  g.addColorStop(.40,'#0A1538');
+  g.addColorStop(.75,'#073039');
+  g.addColorStop(1,  '#06351F');
+  ctx.fillStyle=g; ctx.fillRect(0,0,innerWidth,innerHeight);
+
+  ctx.font=FONT; ctx.textBaseline='top';
+
+  for(const s of stars){
+    ctx.fillStyle = rgba(ROYAL, .10+.12*Math.sin(t*s.spd+s.tw));
+    ctx.fillText('·', s.x*CW, s.y*CH);
+  }
+
+  // far clouds behind islands
+  for(const c of clouds) if(c.depth<.55) drawCloud(c);
+
+  // birds
+  if(flock && flock.wait<=0){
+    const ch = Math.sin(flock.flap)>0 ? 'v' : '–';
+    ctx.fillStyle = rgba(mix(ROYAL,[200,215,255],.35), .6);
+    for(const m of flock.members)
+      ctx.fillText(ch, (flock.x+m.ox)*CW, (flock.y+m.oy)*CH);
+  }
+
+  // islands far → near, each rendered at its own scale
+  for(const h of islands){
+    const bobY = Math.sin(t*h.bobSpd+h.phase)*h.bobAmp;
+    const d = h.isl.depth, s = h.s;
+    ctx.font = fontAt(s);
+    for(const gl of h.isl.glyphs){
+      if(gl.role==='crystal'){
+        const pulse = .5+.5*Math.sin(t*1.6+gl.tw);
+        ctx.fillStyle = rgba(mix(ROYAL,EMERALD,pulse), (.3+.55*pulse)*(.5+.5*d));
+      }else ctx.fillStyle = roleStyle(gl.role, gl.shade, d);
+      ctx.fillText(gl.ch, h.x*CW + gl.dx*CW*s, (h.y+bobY)*CH + gl.dy*CH*s);
+    }
+    for(const tr of h.isl.trees){
+      const sway = Math.sin(t*.7+h.phase)*.25;
+      for(const gl of tr.tree.glyphs){
+        ctx.fillStyle = roleStyle(gl.role, gl.shade, d);
+        const wob = gl.role==='canopy'? sway*(1+gl.dy*-.05) : 0;
+        ctx.fillText(gl.ch, h.x*CW + (tr.tx+gl.dx+wob)*CW*s, (h.y+bobY)*CH + (tr.ty+gl.dy)*CH*s);
+      }
+    }
+  }
+  ctx.font = FONT;
+
+  // waterfalls — english dissolving into kanji
+  for(const d of drops){
+    const prog = Math.min(1,(d.y-d.born)/d.fall.len);
+    const ch = prog<.42? d.ch : prog<.60? pick(TRANSITION) : d.ja;
+    const a  = prog<.08? prog*9 : 1-prog*.45;
+    ctx.font = fontAt(Math.max(.7, islands[d.ix].s));
+    ctx.fillStyle = rgba(tri(.15+prog*.8), Math.max(0,a)*(.5+islands[d.ix].isl.depth*.5));
+    ctx.fillText(ch, d.x*CW, d.y*CH);
+  }
+  ctx.font = FONT;
+
+  for(const m of mist){
+    ctx.fillStyle = rgba(TEAL,(1-m.age/m.life)*.5);
+    ctx.fillText(m.ch, m.x*CW, m.y*CH);
+  }
+
+  for(const b of bubbles){
+    const a = Math.min(1, b.age*2) * Math.min(1,(b.life-b.age)) * .45;
+    ctx.fillStyle = rgba(mix(TEAL,[210,235,255],.4), a);
+    ctx.fillText(b.ch, b.x*CW, b.y*CH);
+  }
+
+  // near clouds drift in front
+  for(const c of clouds) if(c.depth>=.55) drawCloud(c);
+}
+
+function drawCloud(c){
+  const tint = mix(CLOUDC, TEAL, c.depth*.3);
+  for(const gl of c.g){
+    ctx.fillStyle = rgba(tint, (.05+.10*gl.shade)*(.5+c.depth*.6));
+    ctx.fillText(gl.ch, (c.x+gl.dx)*CW, (c.y+gl.dy)*CH);
+  }
+}
+
+/* ─── loop + controls ────────────────────────────────────────── */
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let paused=false, last=performance.now(), seed=0;
+
+const genBtn   = document.getElementById('genBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const seedLbl  = document.getElementById('seedLbl');
+
+function generate(keepSeed){
+  if(!keepSeed) seed = ((Date.now() ^ (performance.now()*7919)) >>> 0) || 1;
+  srand(seed);
+  seedLbl.textContent = 'WORLD ' + seed.toString(36).toUpperCase().padStart(7,'0');
+  build();
+  if(reduced){
+    ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    step(1/30,false); draw();
+  }
+}
+
+function togglePause(){
+  if(reduced) return;
+  paused = !paused;
+  pauseBtn.textContent = paused ? '▶ RESUME' : '❚❚ PAUSE';
+}
+
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000); last=now;
+  if(!paused) step(dt,false);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  draw();
+  if(!reduced) requestAnimationFrame(frame);
+}
+
+genBtn.addEventListener('click', ()=>generate(false));
+pauseBtn.addEventListener('click', togglePause);
+cvs.addEventListener('click', togglePause);            // tap anywhere still pauses
+addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); togglePause(); }
+  if(e.key==='g' || e.key==='G' || e.key==='Enter') generate(false);
+});
+addEventListener('resize',()=>{ ctx.setTransform(1,0,0,1,0,0); generate(true); });
+
+generate(false);
+if(!reduced) requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
